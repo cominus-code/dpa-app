@@ -116,17 +116,18 @@ function randomPassword() {
 async function openAdminPanel() {
   const modal = document.getElementById('modal');
   const { data: users } = await supabase.from('profiles').select('id,username,full_name,role,must_change_password,created_at').order('created_at');
+  const { data: deleted } = await supabase.from('projects').select('id,number,name,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
   modal.innerHTML = `
     <form method="dialog"><h2 id="modal-title">Administrera användare</h2>
     <p class="muted">Konton skapas direkt här — ingen e-postinbjudan. Lösenordet visas en gång; ge det till personen själv.</p>
-    <table class="admintable"><thead><tr><th>Användarnamn</th><th>Namn</th><th>Roll</th><th>Status</th><th></th></tr></thead>
+    <div style="overflow-x:auto"><table class="admintable"><thead><tr><th>Användarnamn</th><th>Namn</th><th>Roll</th><th>Status</th><th></th></tr></thead>
     <tbody>${users.map(u => `
       <tr>
         <td>${u.username}</td><td>${u.full_name}</td><td>${u.role === 'admin' ? 'Admin' : 'LPL'}</td>
         <td>${u.must_change_password ? '<span class="pill pill-yellow">Måste byta lösenord</span>' : '<span class="pill pill-green">Aktivt</span>'}</td>
         <td><button type="button" class="textbutton" data-reset="${u.id}" data-uname="${u.username}">Återställ lösenord</button></td>
       </tr>`).join('')}
-    </tbody></table>
+    </tbody></table></div>
     <hr>
     <h3>Skapa ny användare</h3>
     <div id="cu-error" class="autherror" style="display:none"></div>
@@ -138,6 +139,14 @@ async function openAdminPanel() {
       <button type="button" id="cu-cancel">Stäng</button>
       <button type="button" class="primary" id="cu-submit">Skapa användare</button>
     </span></div>
+    <hr>
+    <h3>Borttagna projekt (${deleted?.length || 0})</h3>
+    <p class="muted">Mjuk radering — leveranser förloras aldrig, de hamnar i den okopplade poolen.</p>
+    <div style="overflow-x:auto"><table class="admintable"><thead><tr><th>Projektnummer</th><th>Namn</th><th>Borttaget</th><th></th></tr></thead>
+    <tbody>${(deleted || []).map(p => `
+      <tr><td>${p.number}</td><td>${p.name}</td><td>${new Date(p.deleted_at).toLocaleString('sv-SE')}</td>
+      <td><button type="button" class="textbutton" data-restore="${p.id}">Återställ</button></td></tr>`).join('') || '<tr><td colspan="4" class="empty">Inga borttagna projekt.</td></tr>'}
+    </tbody></table></div>
     </form>`;
   modal.showModal();
   document.getElementById('cu-cancel').onclick = () => modal.close();
@@ -147,6 +156,14 @@ async function openAdminPanel() {
     if (!confirm(`Sätt nytt tillfälligt lösenord för "${btn.dataset.uname}"?\n\nNytt lösenord: ${pw}\n\nDetta visas bara nu — kopiera det innan du fortsätter.`)) return;
     try { await callFn('admin-reset-password', { user_id: btn.dataset.reset, password: pw }); alert(`Nytt lösenord för ${btn.dataset.uname}:\n${pw}\n\n(Personen måste byta det vid nästa inloggning.)`); }
     catch (e) { alert('Kunde inte återställa: ' + e.message); }
+  });
+  document.querySelectorAll('[data-restore]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('Återställ det här projektet?')) return;
+    const { error } = await supabase.rpc('restore_project', { p_project_id: btn.dataset.restore });
+    if (error) { alert('Kunde inte återställa: ' + error.message); return; }
+    modal.close();
+    document.dispatchEvent(new CustomEvent('dpa:refresh'));
+    openAdminPanel();
   });
   document.getElementById('cu-submit').onclick = async () => {
     const err = document.getElementById('cu-error');
@@ -182,27 +199,39 @@ async function afterSignIn() {
 function finishBoot() {
   hideGate();
   injectUserChrome();
+  document.dispatchEvent(new CustomEvent('dpa:authenticated'));
 }
 
 function injectUserChrome() {
   const identity = document.querySelector('.identity');
   if (identity) {
     const initials = (currentProfile.full_name || currentProfile.username).split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-    identity.innerHTML = `
-      <b>${initials}</b>
-      <span>${currentProfile.full_name}<small>${currentProfile.role === 'admin' ? 'Administratör' : 'Leveransprojektledare'}</small></span>
-      <button type="button" class="textbutton" id="chrome-changepw">Byt lösenord</button>
-      <button type="button" class="textbutton" id="chrome-logout">Logga ut</button>
-    `;
-    document.getElementById('chrome-changepw').onclick = () => { showGate(); renderChangePassword({ forced: false }); };
-    document.getElementById('chrome-logout').onclick = async () => { await supabase.auth.signOut(); location.reload(); };
+    identity.innerHTML = `<b>${initials}</b><span>${currentProfile.full_name}<small>${currentProfile.role === 'admin' ? 'Administratör' : 'Leveransprojektledare'}</small></span>`;
   }
-  const nav = document.querySelector('nav[aria-label="Huvudnavigation"]');
-  if (nav && currentProfile.role === 'admin' && !document.getElementById('nav-admin')) {
-    const b = document.createElement('button');
-    b.id = 'nav-admin'; b.textContent = 'Administrera';
-    b.onclick = () => openAdminPanel();
-    nav.appendChild(b);
+  // The header nav/identity intentionally collapses on narrow screens
+  // (see style.css @media max-width:700px) in favour of the sidebar
+  // (.sidegroup), which stays visible and horizontally scrollable on
+  // mobile. Account actions go there too, so they work at every width.
+  const sidegroup = document.querySelector('.sidegroup');
+  if (sidegroup && !document.getElementById('side-changepw')) {
+    if (currentProfile.role === 'admin') {
+      const admin = document.createElement('button');
+      admin.id = 'side-admin'; admin.type = 'button';
+      admin.innerHTML = '☺ <span>Administrera</span>';
+      admin.onclick = () => openAdminPanel();
+      sidegroup.appendChild(admin);
+    }
+    const changepw = document.createElement('button');
+    changepw.id = 'side-changepw'; changepw.type = 'button';
+    changepw.innerHTML = '⚿ <span>Byt lösenord</span>';
+    changepw.onclick = () => { showGate(); renderChangePassword({ forced: false }); };
+    sidegroup.appendChild(changepw);
+
+    const logout = document.createElement('button');
+    logout.id = 'side-logout'; logout.type = 'button';
+    logout.innerHTML = '⏻ <span>Logga ut</span>';
+    logout.onclick = async () => { await supabase.auth.signOut(); location.reload(); };
+    sidegroup.appendChild(logout);
   }
 }
 
