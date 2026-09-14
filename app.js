@@ -7,7 +7,8 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const dot = (s = 'unknown') => `<span class="dot ${s}" aria-hidden="true"></span>`;
 const statuses = { green: 'Uppfyllt', yellow: 'Bevaka', red: 'Kräver åtgärd', unknown: 'Behov ej bedömt', missing: 'Saknar koppling', na: 'Inte aktuellt' };
 const statusHTML = s => `<span class="status">${dot(s)}${statuses[s] || 'Ej bedömt'}</span>`;
-const cols = [['startup', 'Uppstartsmöte', 'FB-nummer'], ['fn1', 'Fastighetsnät 1', 'FB-nummer'], ['fn2', 'Fastighetsnät 2', 'FB-nummer'], ['fiber', 'Trade / Colt', 'Ordernummer'], ['cs', 'CS-nummer', 'Kommunikation'], ['object', 'Skapat objekt', 'Ja / Nej']];
+const cols = [['startup', 'Uppstartsmöte', 'FB-nummer'], ['fn1', 'Fastighetsnät 1', 'FB-nummer'], ['fn2', 'Fastighetsnät 2', 'FB-nummer'], ['fiber', 'Trade / Colt', 'Ordernummer'], ['cs', 'CS-nummer', 'Kommunikation'], ['object', 'Skapat objekt', 'Ja / Nej'], ['wbs', 'WBS-nummer', 'WBS-kod']];
+const OPTIONAL_COLS = [...cols.map(c => c[0]), 'order', 'deliveryDate', 'reportDate', 'followup']; // 'name' and 'status' are always shown
 
 // ---------------------------------------------------------------------
 // State — now a client-side cache of the database, not the source of
@@ -15,11 +16,16 @@ const cols = [['startup', 'Uppstartsmöte', 'FB-nummer'], ['fn1', 'Fastighetsnä
 // through db.js first, then re-fetches on success (simple and correct,
 // rather than juggling two sources of truth for a 3-person test app).
 // ---------------------------------------------------------------------
-let state = { today: new Date().toISOString().slice(0, 10), projects: [] };
+let state = { today: new Date().toISOString().slice(0, 10), projects: [], tags: [] };
 let view = 'projects', search = '', filter = 'all', owner = null, openProjects = new Set(), openStages = new Set(), tabs = {};
 let unlinkedCache = null;
+let notifications = [];
+let viewPrefs = { columns: {}, column_order: [], filters: {}, sort: {} };
+let reportSelection = new Set();
 
 const currentUserName = () => getProfile()?.full_name || '';
+const currentProfileId = () => getProfile()?.id || '';
+const currentProfileIsAdmin = () => getProfile()?.role === 'admin';
 const project = id => state.projects.find(p => p.id === id);
 const customerNames = p => [...new Set([...p.deliveries.map(l => l.customer).filter(Boolean), ...p.customers.map(c => c.name)])];
 const allOwners = () => [...new Set(state.projects.map(p => p.owner))].sort();
@@ -30,6 +36,8 @@ function followStatus(l) { if (l.closed) return 'green'; const d = R.due(l); ret
 function stageStatus(s) { return aggregate(Object.values(s.points).map(pointStatus)); }
 function deliveryStatus(l) { if (l.closed) return 'green'; const ss = [...Object.values(l.points).map(pointStatus), ...l.stages.map(stageStatus)]; if (R.due(l) < state.today || l.deliveryDate < state.today || l.reportDate && l.reportDate < state.today) ss.push('red'); return aggregate(ss); }
 function projectStatus(p) { return aggregate(p.deliveries.map(deliveryStatus)); }
+const isArchived = p => !!p.actual;
+function colVisible(key) { return viewPrefs.columns[key] !== false; } // default visible unless explicitly hidden
 
 function toast(t) { $('#toast').textContent = t; $('#toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('#toast').hidden = true, 4500); }
 function btn(action, text, p = '', l = '', extra = '') { return `<button type="button" data-action="${action}" data-p="${p}" data-l="${l}" ${extra}>${text}</button>`; }
@@ -98,29 +106,42 @@ function render() {
   if (['projects', 'all'].includes(view)) renderProjects();
   else if (view === 'followups' || view === 'reminders') renderTasks();
   else if (view === 'unlinked') renderUnlinked();
+  else if (view === 'archive') renderArchive();
+  else if (view === 'trash') renderTrash();
   else renderTeam();
 }
 
 function renderProjects() {
-  const mine = state.projects.filter(p => view === 'all' || owner === 'all' || p.owner === owner);
+  const mine = state.projects.filter(p => !isArchived(p)).filter(p => view === 'all' || owner === 'all' || p.owner === owner);
   const counts = s => mine.filter(p => projectStatus(p) === s).length;
-  $('#app').innerHTML = pageHead('Projektöversikt', 'Projekt, leveranser och etapper i en samlad vy.', btn('new', '＋ Skapa nytt projekt', '', '', 'class="primary"')) +
+  $('#app').innerHTML = pageHead('Projektöversikt', 'Projekt, leveranser och etapper i en samlad vy.', `${btn('customize', '⚙ Anpassa vy', '', '', 'id="btn-customize"')}${btn('new', '＋ Skapa nytt projekt', '', '', 'class="primary"')}`) +
     `<div class="stats">${[['red', counts('red'), 'Projekt kräver åtgärd', 'Minst en avvikelse'], ['yellow', counts('yellow'), 'Projekt att bevaka', 'Följ nästa steg'], ['green', counts('green'), 'Projekt uppfyllda', 'Kontrollpunkter klara'], ['all', mine.length, 'Totalt antal projekt', `${mine.reduce((n, p) => n + p.deliveries.length, 0)} leveranser · ${mine.reduce((n, p) => n + p.deliveries.reduce((v, l) => v + l.stages.length, 0), 0)} etapper`]].map(([s, n, t, h]) => `<button class="stat" data-filter="${s}">${dot(s)}<div><strong>${n}</strong><span>${t}</span><small>${h}</small></div></button>`).join('')}</div>` +
-    `<div class="toolbar"><input id="search" aria-label="Sök projekt, kund eller order" placeholder="Sök projekt, kund, RO eller GA1…" value="${esc(search)}"><select id="status-filter" aria-label="Filtrera status"><option value="all">Alla statusar</option><option value="red">Kräver åtgärd</option><option value="yellow">Bevaka</option><option value="green">Uppfyllt</option><option value="unknown">Behov ej bedömt</option></select><select id="owner-filter" aria-label="Projektledare"><option value="all">Alla projektledare</option>${allOwners().map(o => `<option ${o === owner ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select><button class="reset" data-action="reset-filter">Återställ filter</button></div><div id="projects-result"></div>`;
+    `<div class="toolbar"><input id="search" aria-label="Sök projekt, kund eller order" placeholder="Sök projekt, kund, RO eller GA1…" value="${esc(search)}"><select id="status-filter" aria-label="Filtrera status"><option value="all">Alla statusar</option><option value="red">Kräver åtgärd</option><option value="yellow">Bevaka</option><option value="green">Uppfyllt</option><option value="unknown">Behov ej bedömt</option></select><select id="owner-filter" aria-label="Projektledare"><option value="all">Alla projektledare</option>${allOwners().map(o => `<option ${o === owner ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select><button class="reset" data-action="reset-filter">Återställ filter</button></div><div id="projects-result"></div><div id="report-bar"></div>`;
   $('#status-filter').value = filter;
   $('#owner-filter').value = view === 'all' ? 'all' : owner;
   $('#search').oninput = e => { search = e.target.value; drawProjects(); };
-  $('#status-filter').onchange = e => { filter = e.target.value; drawProjects(); };
+  $('#status-filter').onchange = e => { filter = e.target.value; saveViewPrefsSoon(); drawProjects(); };
   $('#owner-filter').onchange = e => { owner = e.target.value; view = 'projects'; render(); };
+  $('#btn-customize').onclick = e => openColumnPicker(e.currentTarget);
   drawProjects();
 }
 function drawProjects() {
-  const list = state.projects.filter(p => view === 'all' || owner === 'all' || p.owner === owner).filter(p => JSON.stringify(p).toLowerCase().includes(search.toLowerCase())).filter(p => filter === 'all' || projectStatus(p) === filter);
-  $('#projects-result').innerHTML = `<div class="tablewrap"><table class="projecttable"><thead><tr><th>Projekt</th><th>Projektnummer</th><th>Kund</th><th>Projektledare</th><th>Leveranser</th><th>Etapper</th><th>Önskat sista datum</th><th>Faktiskt datum</th><th>Påminnelse</th><th>Status</th></tr></thead><tbody>${list.map(p => `<tr class="projectrow ${openProjects.has(p.id) ? 'open' : ''}"><td>${btn('expand', `<span>${openProjects.has(p.id) ? '⌄' : '›'}</span>${esc(p.name)}`, p.id, '', `class="projectname" aria-expanded="${openProjects.has(p.id)}"`)}</td><td>${p.number}</td><td>${esc(customerNames(p).join(', ') || 'Ej kopplad')}</td><td>${esc(p.owner)}</td><td>${p.deliveries.length}</td><td>${p.deliveries.reduce((n, l) => n + l.stages.length, 0)}</td><td>${p.desired || '–'}</td><td>${p.actual || '–'}</td><td class="${p.reminder && p.reminder <= state.today ? 'overdue' : ''}">${p.reminder || '–'}</td><td>${statusHTML(projectStatus(p))}</td></tr>${openProjects.has(p.id) ? `<tr><td colspan="10" class="expandcell">${projectDetail(p)}</td></tr>` : ''}`).join('') || '<tr><td colspan="10" class="empty">Inga projekt matchar ditt urval.</td></tr>'}</tbody></table></div><div class="legend"><strong>Statusförklaring:</strong><span>${dot('green')}Uppfyllt</span><span>${dot('yellow')}Bevaka</span><span>${dot('red')}Kräver åtgärd</span><span>${dot('na')}Inte aktuellt</span><span>${dot('unknown')}Saknar koppling / ej bedömt</span></div>`;
+  const list = state.projects.filter(p => !isArchived(p)).filter(p => view === 'all' || owner === 'all' || p.owner === owner).filter(p => JSON.stringify(p).toLowerCase().includes(search.toLowerCase())).filter(p => filter === 'all' || projectStatus(p) === filter);
+  $('#projects-result').innerHTML = `<div class="tablewrap"><table class="projecttable"><thead><tr><th></th><th>Projekt</th><th>Projektnummer</th><th>Kund</th><th>Projektledare</th><th>Leveranser</th><th>Etapper</th><th>Önskat sista datum</th><th>Faktiskt datum</th><th>Påminnelse</th><th>Status</th></tr></thead><tbody>${list.map(p => `<tr class="projectrow ${openProjects.has(p.id) ? 'open' : ''}"><td><input type="checkbox" data-reportpick="${p.id}" ${reportSelection.has(p.id) ? 'checked' : ''} aria-label="Välj för rapport"></td><td>${btn('expand', `<span>${openProjects.has(p.id) ? '⌄' : '›'}</span>${esc(p.name)}${p.tagName ? `<span class="tagchip">${esc(p.tagName)}</span>` : ''}`, p.id, '', `class="projectname" aria-expanded="${openProjects.has(p.id)}"`)}</td><td>${p.number}</td><td>${esc(customerNames(p).join(', ') || 'Ej kopplad')}</td><td>${esc(p.owner)}</td><td>${p.deliveries.length}</td><td>${p.deliveries.reduce((n, l) => n + l.stages.length, 0)}</td><td>${p.desired || '–'}</td><td>${p.actual || '–'}</td><td class="${p.reminder && p.reminder <= state.today ? 'overdue' : ''}">${p.reminder || '–'}</td><td>${statusHTML(projectStatus(p))}</td></tr>${openProjects.has(p.id) ? `<tr><td colspan="11" class="expandcell">${projectDetail(p)}</td></tr>` : ''}`).join('') || '<tr><td colspan="11" class="empty">Inga projekt matchar ditt urval.</td></tr>'}</tbody></table></div><div class="legend"><strong>Statusförklaring:</strong><span>${dot('green')}Uppfyllt</span><span>${dot('yellow')}Bevaka</span><span>${dot('red')}Kräver åtgärd</span><span>${dot('na')}Inte aktuellt</span><span>${dot('unknown')}Saknar koppling / ej bedömt</span></div>`;
+  document.querySelectorAll('[data-reportpick]').forEach(cb => cb.onchange = () => {
+    cb.checked ? reportSelection.add(cb.dataset.reportpick) : reportSelection.delete(cb.dataset.reportpick);
+    drawReportBar();
+  });
+  drawReportBar();
+}
+function drawReportBar() {
+  const bar = $('#report-bar');
+  if (!bar) return;
+  bar.innerHTML = reportSelection.size ? `<div class="reportbar">${reportSelection.size} projekt valda för rapport ${btn('build-report', 'Skapa rapport →', '', '', 'class="primary"')}<button type="button" data-action="clear-report">Rensa urval</button></div>` : '';
 }
 function projectDetail(p) {
   const tab = tabs[p.id] || 'deliveries';
-  return `<div class="projectdetail"><div class="detailhead"><div class="actions"><h2>${esc(p.name)}</h2>${statusHTML(projectStatus(p))}</div><div class="actions">${btn('edit-project', '✎ Redigera projekt', p.id)}${btn('takeover', 'Ta över projekt', p.id, '', p.owner === currentUserName() ? 'disabled' : '')}${btn('delete-project', '🗑 Ta bort projekt', p.id)}</div></div><section class="info"><h3>Projektinformation</h3><div class="infofields">${[['Projektnummer', p.number], ['Kundbolag', customerNames(p).join(', ') || 'Ej kopplat'], ['Projektledare', p.owner], ['Önskat sista leveransdatum', p.desired || '–'], ['Faktiskt datum', p.actual || '–'], ['Påminnelsedatum', p.reminder || '–']].map(([k, v]) => `<div><small>${k}</small>${esc(v)}</div>`).join('')}</div><div class="notehead"><strong>Projektanteckning</strong>${btn('note', '✎ Redigera', p.id)}</div><div class="notetext">${esc(p.note || 'Ingen projektanteckning ännu.')}</div><div class="notemeta">${p.noteAt ? 'Senast uppdaterad: ' + esc(p.noteAt) : 'Intern anteckning'}</div></section><div class="tabline"><div class="tabs">${[['deliveries', `Leveranser (${p.deliveries.length})`], ['customers', 'Kundbolag'], ['history', `Historik`]].map(([key, name]) => btn('tab', name, p.id, '', `data-tab="${key}" class="${tab === key ? 'active' : ''}"`)).join('')}${btn('report', 'Kunduppdatering', p.id)}</div>${btn('link-delivery', '＋ Lägg till leverans', p.id)}</div>${tab === 'history' ? `<div id="history-slot-${p.id}"><p class="muted">Laddar historik…</p></div>` : tab === 'customers' ? `<div class="section">${customerNames(p).map(name => `<p><strong>${esc(name)}</strong><br><small>${esc(p.deliveries.find(l => l.customer === name)?.org || p.customers.find(c => c.name === name)?.org || 'Org.nr saknas')}</small></p>`).join('') || '<p>Inga kundbolag kopplade.</p>'}${btn('add-customer', '＋ Lägg till kundbolag', p.id)}</div>` : deliveryTable(p)}</div>`;
+  return `<div class="projectdetail"><div class="detailhead"><div class="actions"><h2>${esc(p.name)}${p.tagName ? `<span class="tagchip">${esc(p.tagName)}</span>` : ''}</h2>${statusHTML(projectStatus(p))}</div><div class="actions">${btn('edit-project', '✎ Redigera projekt', p.id)}${btn('takeover', 'Ta över projekt', p.id, '', p.owner === currentUserName() ? 'disabled' : '')}${btn('delete-project', '🗑 Flytta till papperskorg', p.id)}</div></div><section class="info"><h3>Projektinformation</h3><div class="infofields">${[['Projektnummer', p.number], ['Kundbolag', customerNames(p).join(', ') || 'Ej kopplat'], ['Projektledare', p.owner], ['Märkning', p.tagName || 'Ingen'], ['Önskat sista leveransdatum', p.desired || '–'], ['Faktiskt datum', p.actual || '–'], ['Påminnelsedatum', p.reminder || '–']].map(([k, v]) => `<div><small>${k}</small>${esc(v)}</div>`).join('')}</div><div class="notehead"><strong>Projektanteckning</strong>${btn('note', '✎ Redigera', p.id)}</div><div class="notetext">${esc(p.note || 'Ingen projektanteckning ännu.')}</div><div class="notemeta">${p.noteAt ? 'Senast uppdaterad: ' + esc(p.noteAt) : 'Intern anteckning'}</div></section><div class="tabline"><div class="tabs">${[['deliveries', `Leveranser (${p.deliveries.length})`], ['customers', 'Kundbolag'], ['history', `Historik`]].map(([key, name]) => btn('tab', name, p.id, '', `data-tab="${key}" class="${tab === key ? 'active' : ''}"`)).join('')}${btn('report', 'Kunduppdatering', p.id)}</div>${btn('link-delivery', '＋ Lägg till leverans', p.id)}</div>${tab === 'history' ? `<div id="history-slot-${p.id}"><p class="muted">Laddar historik…</p></div>` : tab === 'customers' ? `<div class="section">${customerNames(p).map(name => `<p><strong>${esc(name)}</strong><br><small>${esc(p.deliveries.find(l => l.customer === name)?.org || p.customers.find(c => c.name === name)?.org || 'Org.nr saknas')}</small></p>`).join('') || '<p>Inga kundbolag kopplade.</p>'}${btn('add-customer', '＋ Lägg till kundbolag', p.id)}</div>` : deliveryTable(p)}</div>`;
 }
 function loadHistoryIfNeeded(p) {
   const slot = document.getElementById(`history-slot-${p.id}`);
@@ -147,7 +168,36 @@ function cell(p, l, key, s = null) {
   return `<button class="cellbutton" data-action="point" data-p="${p.id}" data-l="${l.id}" data-key="${key}" ${s ? `data-stage="${s.id}"` : ''}>${dot(status)}${esc(c.ref || statuses[status] || 'Saknar koppling')}<small>${inherited ? 'Gemensamt på leveransen' : c.date || statuses[status]}</small></button>`;
 }
 function deliveryTable(p) {
-  return `<div class="tablewrap"><table class="deliverytable"><thead><tr><th>Leveransnamn</th><th>Status</th><th>Leveransorder<br><small>RO / GA1</small></th>${cols.map(([, label, sub]) => `<th>${label}<br><small>${sub}</small></th>`).join('')}<th>Leveransdatum<br><small>Från order</small></th><th>Slutrapportering<br><small>Planerat datum</small></th><th>Kunduppföljning<br><small>Nästa datum</small></th><th>Klarskriv leveransen</th><th></th><th>Etapper</th></tr></thead><tbody>${p.deliveries.map(l => `<tr><td>${btn('stages', `${openStages.has(l.id) ? '⌄' : '›'} ${esc(l.name)}`, p.id, l.id, `class="projectname" aria-expanded="${openStages.has(l.id)}"`)}</td><td>${statusHTML(deliveryStatus(l))}${l.stages.length ? `<small class="submeta">${l.stages.filter(s => stageStatus(s) === 'green').length} av ${l.stages.length} etapper klara</small>` : ''}</td><td>${btn('delivery', esc(l.order), p.id, l.id, 'class="textbutton"')}</td>${cols.map(([k]) => `<td>${cell(p, l, k)}</td>`).join('')}<td>${btn('delivery', l.deliveryDate || 'Datum saknas', p.id, l.id, 'class="datebutton"')}</td><td>${btn('reportdate', l.reportDate || '＋ Ange datum', p.id, l.id, 'class="datebutton"')}${l.reportDate && l.reportDate < state.today && !l.closed ? '<small class="submeta overdue">Planerat datum passerat</small>' : ''}</td><td>${btn('followup', l.closed ? `${dot('green')} Avslutad` : `${dot(followStatus(l))} ${R.due(l)}${R.due(l) <= state.today ? '<small class="submeta overdue">Uppföljning behövs nu</small>' : ''}`, p.id, l.id, 'class="datebutton"')}</td><td>${l.closed ? `${dot('green')} ${l.closed}` : btn('close-delivery', 'Klarskriv', p.id, l.id)}</td><td>${btn('unlink-delivery', 'Koppla bort', p.id, l.id, 'class="textbutton"')}</td><td>${btn('stages', String(l.stages.length) + ' ⌄', p.id, l.id)}</td></tr>${openStages.has(l.id) ? `<tr><td colspan="15" class="stagecell"><table class="stagetable"><thead><tr><th>Etappnamn</th><th>Status</th>${cols.map(([, name]) => `<th>${name}</th>`).join('')}</tr></thead><tbody>${l.stages.map(s => `<tr><td>${esc(s.name)}</td><td>${statusHTML(stageStatus(s))}</td>${cols.map(([k]) => `<td>${cell(p, l, k, s)}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="8" class="empty">Leveransen har ännu inga etapper.</td></tr>'}</tbody></table>${btn('stage', '＋ Lägg till etapp', p.id, l.id, 'class="textbutton"')}</td></tr>` : ''}`).join('') || '<tr><td colspan="15" class="empty">Koppla en leverans via RO- eller GA1-nummer för att komma igång.</td></tr>'}</tbody></table></div><p class="scrollhint">Bläddra i sidled för datum och uppföljning. Klicka på en kontrollpunkt för underlag och kopplingar.</p>`;
+  const showOrder = colVisible('order'), showDate = colVisible('deliveryDate'), showReport = colVisible('reportDate'), showFollow = colVisible('followup');
+  const visibleCols = cols.filter(([k]) => colVisible(k));
+  const colCount = 2 + (showOrder ? 1 : 0) + visibleCols.length + (showDate ? 1 : 0) + (showReport ? 1 : 0) + (showFollow ? 1 : 0) + 3;
+  const stageColCount = 2 + visibleCols.length;
+  return `<div class="tablewrap"><table class="deliverytable"><thead><tr><th>Leveransnamn</th><th>Status</th>${showOrder ? '<th>Leveransorder<br><small>RO / GA1</small></th>' : ''}${visibleCols.map(([, label, sub]) => `<th>${label}<br><small>${sub}</small></th>`).join('')}${showDate ? '<th>Leveransdatum<br><small>Från order</small></th>' : ''}${showReport ? '<th>Slutrapportering<br><small>Planerat datum</small></th>' : ''}${showFollow ? '<th>Kunduppföljning<br><small>Nästa datum</small></th>' : ''}<th>Klarskriv leveransen</th><th></th><th>Etapper</th></tr></thead><tbody>${p.deliveries.map(l => `<tr><td>${btn('stages', `${openStages.has(l.id) ? '⌄' : '›'} ${esc(l.name)}`, p.id, l.id, `class="projectname" aria-expanded="${openStages.has(l.id)}"`)}</td><td>${statusHTML(deliveryStatus(l))}${l.stages.length ? `<small class="submeta">${l.stages.filter(s => stageStatus(s) === 'green').length} av ${l.stages.length} etapper klara</small>` : ''}</td>${showOrder ? `<td>${btn('delivery', esc(l.order), p.id, l.id, 'class="textbutton"')}</td>` : ''}${visibleCols.map(([k]) => `<td>${cell(p, l, k)}</td>`).join('')}${showDate ? `<td>${btn('delivery', l.deliveryDate || 'Datum saknas', p.id, l.id, 'class="datebutton"')}</td>` : ''}${showReport ? `<td>${btn('reportdate', l.reportDate || '＋ Ange datum', p.id, l.id, 'class="datebutton"')}${l.reportDate && l.reportDate < state.today && !l.closed ? '<small class="submeta overdue">Planerat datum passerat</small>' : ''}</td>` : ''}${showFollow ? `<td>${btn('followup', l.closed ? `${dot('green')} Avslutad` : `${dot(followStatus(l))} ${R.due(l)}${R.due(l) <= state.today ? '<small class="submeta overdue">Uppföljning behövs nu</small>' : ''}`, p.id, l.id, 'class="datebutton"')}</td>` : ''}<td>${l.closed ? `${dot('green')} ${l.closed}` : btn('close-delivery', 'Klarskriv', p.id, l.id)}</td><td>${btn('unlink-delivery', 'Koppla bort', p.id, l.id, 'class="textbutton"')}</td><td>${btn('stages', String(l.stages.length) + ' ⌄', p.id, l.id)}</td></tr>${openStages.has(l.id) ? `<tr><td colspan="${colCount}" class="stagecell"><table class="stagetable"><thead><tr><th>Etappnamn</th><th>Status</th>${visibleCols.map(([, name]) => `<th>${name}</th>`).join('')}</tr></thead><tbody>${l.stages.map(s => `<tr><td>${esc(s.name)}</td><td>${statusHTML(stageStatus(s))}</td>${visibleCols.map(([k]) => `<td>${cell(p, l, k, s)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${stageColCount}" class="empty">Leveransen har ännu inga etapper.</td></tr>`}</tbody></table>${btn('stage', '＋ Lägg till etapp', p.id, l.id, 'class="textbutton"')}</td></tr>` : ''}`).join('') || `<tr><td colspan="${colCount}" class="empty">Koppla en leverans via RO- eller GA1-nummer för att komma igång.</td></tr>`}</tbody></table></div><p class="scrollhint">Bläddra i sidled för datum och uppföljning. Klicka på en kontrollpunkt för underlag och kopplingar.</p>`;
+}
+function openColumnPicker(anchor) {
+  document.querySelectorAll('.colpicker').forEach(el => el.remove());
+  const el = document.createElement('div');
+  el.className = 'colpicker';
+  const optionalLabels = { order: 'Leveransorder', deliveryDate: 'Leveransdatum', reportDate: 'Slutrapportering', followup: 'Kunduppföljning' };
+  cols.forEach(([k, label]) => optionalLabels[k] = label);
+  el.innerHTML = `<strong style="font-size:11px;text-transform:uppercase;color:var(--muted)">Anpassa min vy</strong><hr>${OPTIONAL_COLS.map(k => `<label><input type="checkbox" data-colkey="${k}" ${colVisible(k) ? 'checked' : ''}>${esc(optionalLabels[k] || k)}</label>`).join('')}<hr><small class="muted">Leverans och Status visas alltid. Sparas automatiskt.</small>`;
+  const r = anchor.getBoundingClientRect();
+  el.style.top = (r.bottom + window.scrollY + 4) + 'px';
+  el.style.left = (r.left + window.scrollX) + 'px';
+  document.body.appendChild(el);
+  el.querySelectorAll('[data-colkey]').forEach(cb => cb.onchange = () => {
+    viewPrefs.columns[cb.dataset.colkey] = cb.checked;
+    saveViewPrefsSoon();
+    drawProjects();
+  });
+  setTimeout(() => document.addEventListener('click', function h(e) { if (!el.contains(e.target) && e.target !== anchor) { el.remove(); document.removeEventListener('click', h); } }), 0);
+}
+let viewPrefsTimer = null;
+function saveViewPrefsSoon() {
+  clearTimeout(viewPrefsTimer);
+  viewPrefsTimer = setTimeout(() => {
+    DB.saveViewPreferences({ columns: viewPrefs.columns, column_order: [], filters: { status: filter }, sort: {} }).catch(() => {});
+  }, 500);
 }
 function renderTasks() {
   const follow = view === 'followups';
@@ -161,9 +211,21 @@ async function renderUnlinked() {
   } catch (e) { $('#unlinked-slot').innerHTML = `<p class="muted">Kunde inte hämta: ${esc(e.message)}</p>`; return; }
   $('#unlinked-slot').innerHTML = `<div class="tablewrap"><table class="tasktable"><thead><tr><th>Leveransorder</th><th>Leverans</th><th>Kund</th><th>Leveransdatum</th><th>Kända kontrollpunkter</th><th></th></tr></thead><tbody>${unlinkedCache.map(o => `<tr><td>${esc(o.order)}</td><td>${esc(o.name)}</td><td>${esc(o.customer || '–')}</td><td>${o.deliveryDate || '–'}</td><td>${o.knownCheckpoints}</td><td>${btn('choose-project', 'Koppla till projekt', '', '', `data-order="${o.id}"`)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Inga okopplade leveranser just nu.</td></tr>'}</tbody></table></div>`;
 }
-function renderTeam() {
-  $('#app').innerHTML = pageHead('Teamöversikt', 'Projekt och avvikelser per projektledare.') + `<div class="tablewrap"><table><thead><tr><th>Projektledare</th><th>Projekt</th><th>Leveranser</th><th>Kräver åtgärd</th><th></th></tr></thead><tbody>${allOwners().map(o => { const ps = state.projects.filter(p => p.owner === o); return `<tr><td>${esc(o)}</td><td>${ps.length}</td><td>${ps.reduce((n, p) => n + p.deliveries.length, 0)}</td><td>${ps.filter(p => projectStatus(p) === 'red').length}</td><td>${btn('owner', 'Visa projekt', '', '', `data-owner="${esc(o)}"`)}</td></tr>`; }).join('')}</tbody></table></div>`;
+function renderArchive() {
+  const list = state.projects.filter(isArchived).filter(p => view === 'all' || owner === 'all' || p.owner === owner);
+  $('#app').innerHTML = pageHead('Arkiv', 'Slutrapporterade projekt (faktiskt datum satt) — ur den aktiva listan men sökbara med full historik.') + `<div class="tablewrap"><table class="projecttable"><thead><tr><th>Projekt</th><th>Projektnummer</th><th>Kund</th><th>Projektledare</th><th>Faktiskt datum</th><th>Status vid arkivering</th><th></th></tr></thead><tbody>${list.map(p => `<tr class="projectrow ${openProjects.has(p.id) ? 'open' : ''}"><td>${btn('expand', `<span>${openProjects.has(p.id) ? '⌄' : '›'}</span>${esc(p.name)}${p.tagName ? `<span class="tagchip">${esc(p.tagName)}</span>` : ''}`, p.id, '', `class="projectname" aria-expanded="${openProjects.has(p.id)}"`)}</td><td>${p.number}</td><td>${esc(customerNames(p).join(', ') || 'Ej kopplad')}</td><td>${esc(p.owner)}</td><td>${p.actual}</td><td>${statusHTML(projectStatus(p))}</td><td>${btn('reactivate', '↺ Återaktivera', p.id)}</td></tr>${openProjects.has(p.id) ? `<tr><td colspan="7" class="expandcell">${projectDetail(p)}</td></tr>` : ''}`).join('') || '<tr><td colspan="7" class="empty">Inga arkiverade projekt ännu.</td></tr>'}</tbody></table></div>`;
 }
+async function renderTrash() {
+  $('#app').innerHTML = pageHead('Papperskorg', 'Projekt du (eller, om du är admin, någon) tagit bort. Leveranser förloras aldrig — de hamnar i den okopplade poolen direkt vid borttagning.') + '<div id="trash-slot"><p class="muted">Laddar…</p></div>';
+  let list;
+  try { list = await DB.fetchTrash(); } catch (e) { $('#trash-slot').innerHTML = `<p class="muted">Kunde inte hämta: ${esc(e.message)}</p>`; return; }
+  const mine = currentProfileIsAdmin() ? list : list.filter(p => p.owner_id === currentProfileId());
+  $('#trash-slot').innerHTML = `<div class="tablewrap"><table class="tasktable"><thead><tr><th>Projektnummer</th><th>Namn</th><th>Ägare</th><th>Borttaget</th><th>Av</th><th></th></tr></thead><tbody>${mine.map(p => `<tr><td>${p.number}</td><td>${esc(p.name)}</td><td>${esc(p.ownerName)}</td><td>${new Date(p.deleted_at).toLocaleString('sv-SE')}</td><td>${esc(p.deletedByName)}</td><td>${btn('restore-trash', 'Återställ', p.id)}${btn('purge-trash', 'Radera permanent', p.id, '', 'class="textbutton"')}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Papperskorgen är tom.</td></tr>'}</tbody></table></div>`;
+}
+function renderTeam() {
+  $('#app').innerHTML = pageHead('Teamöversikt', 'Projekt och avvikelser per projektledare.') + `<div class="tablewrap"><table><thead><tr><th>Projektledare</th><th>Projekt</th><th>Leveranser</th><th>Kräver åtgärd</th><th></th></tr></thead><tbody>${allOwners().map(o => { const ps = state.projects.filter(p => p.owner === o && !isArchived(p)); return `<tr><td>${esc(o)}</td><td>${ps.length}</td><td>${ps.reduce((n, p) => n + p.deliveries.length, 0)}</td><td>${ps.filter(p => projectStatus(p) === 'red').length}</td><td>${btn('owner', 'Visa projekt', '', '', `data-owner="${esc(o)}"`)}</td></tr>`; }).join('')}</tbody></table></div>`;
+}
+
 
 // ---------------------------------------------------------------------
 // Mutations — each performs the write via db.js, then refreshes state.
@@ -176,14 +238,15 @@ function newProject() {
   });
 }
 function editProject(p) {
-  dialog('Redigera projekt', field('Projektnamn', 'name', p.name, 'text', true) + `<div class="formgrid">${field('Kundens önskade sista leveransdatum', 'desired', p.desired, 'date')}${field('Faktiskt datum', 'actual', p.actual, 'date')}${field('Påminnelsedatum', 'reminder', p.reminder, 'date')}<label>Orsak vid försening<select name="reason"><option value="">Välj orsak</option>${['Kund / tillträde', 'Fiberleverans', 'Entreprenör', 'Internt beroende', 'Annat'].map(s => `<option ${p.reason === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label></div><label class="check"><input name="confirmed" type="checkbox">Jag har stämt av önskat datum med kunden och verifierat att det är rimligt.</label>${p.originalDesired ? `<p class="muted">Ursprungligt önskat datum: ${p.originalDesired}. Det behålls vid ändring för uppföljning.</p>` : ''}`, 'Spara', async f => {
+  const tagOptions = `<option value="">Ingen märkning</option>${state.tags.map(t => `<option value="${t.id}" ${p.tagId === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}`;
+  dialog('Redigera projekt', field('Projektnamn', 'name', p.name, 'text', true) + `<label>Märkning (samlingsprojekt, valfritt)<select name="tagId">${tagOptions}</select></label><div class="formgrid">${field('Kundens önskade sista leveransdatum', 'desired', p.desired, 'date')}${field('Faktiskt datum', 'actual', p.actual, 'date')}${field('Påminnelsedatum', 'reminder', p.reminder, 'date')}<label>Orsak vid försening<select name="reason"><option value="">Välj orsak</option>${['Kund / tillträde', 'Fiberleverans', 'Entreprenör', 'Internt beroende', 'Annat'].map(s => `<option ${p.reason === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label></div><label class="check"><input name="confirmed" type="checkbox">Jag har stämt av önskat datum med kunden och verifierat att det är rimligt.</label>${p.originalDesired ? `<p class="muted">Ursprungligt önskat datum: ${p.originalDesired}. Det behålls vid ändring för uppföljning.</p>` : ''}${p.actual ? '<div class="notice">Projektet är arkiverat (faktiskt datum satt). Rensa fältet för att flytta tillbaka det till den aktiva listan.</div>' : ''}`, 'Spara', async f => {
     const desired = f.get('desired'), actual = f.get('actual'), name = f.get('name').trim();
     if (!name) return fail('Ange ett projektnamn.');
     if (desired && desired !== p.desired && !f.get('confirmed')) return fail('Bekräfta kunddialogen innan du ändrar önskat datum.');
     if (actual > state.today) return fail('Faktiskt datum kan inte ligga i framtiden.');
     if (actual && (p.originalDesired || desired) && actual > (p.originalDesired || desired) && !f.get('reason')) return fail('Välj orsakskod eftersom utfallet är senare än ursprungligt önskat datum.');
     if (actual && p.deliveries.some(l => !l.closed)) return fail('Klarskriv projektets leveranser innan du registrerar projektets faktiska slutdatum.');
-    const patch = { name, desired, actual, reminder: f.get('reminder'), reason: f.get('reason') };
+    const patch = { name, desired, actual, reminder: f.get('reminder'), reason: f.get('reason'), tagId: f.get('tagId') };
     if (!p.originalDesired && desired) patch.originalDesired = desired;
     return runWrite(DB.updateProject(p.id, patch, p.updatedAt));
   });
@@ -310,11 +373,12 @@ document.addEventListener('click', async e => {
     return runWrite(DB.addCustomer(p.id, { name: f.get('name').trim(), org: f.get('org').trim() }));
   });
   if (a === 'takeover') dialog('Ta över projekt', `<p>${esc(p.name)} flyttas från ${esc(p.owner)} till ${esc(currentUserName())}. Källsystemens ansvar ändras inte.</p>`, 'Ta över', () => runWrite(DB.takeOverProject(p.id)));
-  if (a === 'delete-project') dialog('Ta bort projekt', `<div class="notice">Projektet döljs och räknas som borttaget. Leveranser raderas inte — de hamnar bland de okopplade ordrarna. En administratör kan återställa projektet senare.</div><p><strong>${esc(p.name)}</strong> (${p.number})</p>`, 'Ta bort projekt', async () => {
+  if (a === 'delete-project') dialog('Flytta till papperskorg', `<div class="notice">Projektet flyttas till din papperskorg. Leveranser raderas inte — de hamnar bland de okopplade ordrarna. Du kan själv återställa eller permanent radera det senare från "Papperskorg" i menyn.</div><p><strong>${esc(p.name)}</strong> (${p.number})</p>`, 'Flytta till papperskorg', async () => {
     const ok = await runWrite(DB.deleteProjectRemote(p.id));
-    if (ok) { openProjects.delete(p.id); toast('Projektet är borttaget.'); }
+    if (ok) { openProjects.delete(p.id); toast('Projektet ligger nu i papperskorgen.'); }
     return ok;
   });
+  if (a === 'reactivate') dialog('Återaktivera projekt', `<p><strong>${esc(p.name)}</strong> flyttas tillbaka till den aktiva listan. Faktiskt datum rensas.</p>`, 'Återaktivera', () => runWrite(DB.updateProject(p.id, { actual: '', reason: '' }, p.updatedAt)).then(ok => { if (ok) toast('Projektet är aktivt igen.'); return ok; }));
   if (a === 'unlink-delivery') dialog('Koppla bort leverans', `<p><strong>${esc(l.name)}</strong> (${esc(l.order)}) kopplas bort från ${esc(p.name)} och hamnar bland de okopplade ordrarna. Kontrollpunkter och historik följer med leveransen.</p>`, 'Koppla bort', () => runWrite(DB.unlinkDelivery(l.id)).then(ok => { if (ok) toast('Leveransen är bortkopplad.'); return ok; }));
   if (a === 'reportdate') dialog('Planera slutrapportering', field('Slutrapporteringsdatum (valfritt)', 'date', l.reportDate, 'date') + '<p class="muted">Detta är ett planeringsdatum. Det verkliga klarskrivningsdatumet sparas när du klarskriver leveransen.</p>', 'Spara', f => runWrite(DB.updateDeliveryField(l.id, { reportDate: f.get('date') }, l.updatedAt)));
   if (a === 'adjust-follow') dialog('Justera nästa kunduppföljning', field('Nästa datum', 'date', R.due(l), 'date', true) + field('Skäl till justering', 'reason', '', 'text', true) + '<small>Ett manuellt datum gäller till nästa genomförda uppföljning eller ändrat källdatum. Avvikelse från tvåveckorsregeln sparas i historiken.</small>', 'Spara', async f => {
@@ -327,18 +391,112 @@ document.addEventListener('click', async e => {
     return runWrite(DB.closeDelivery(l.id, f.get('note'))).then(ok => { if (ok) toast('Leveransen är klarskriven. Kunduppföljningen har avslutats.'); return ok; });
   });
   if (a === 'sync-date') dialog('Prova ändrat datum från ordern', field('Nytt leveransdatum i demokällan', 'date', l.deliveryDate, 'date', true) + '<div class="notice">Simulerar nästa hämtning från RO / GA1 — skriver till testdatabasen så att kunduppföljningen räknas om, precis som en riktig integration skulle göra.</div>', 'Simulera hämtning', f => runWrite(DB.updateDeliveryField(l.id, { deliveryDate: f.get('date') }, l.updatedAt)).then(ok => { if (ok) deliveryPanel(project(p.id), project(p.id).deliveries.find(d => d.id === l.id)); return ok; }));
+
+  if (a === 'restore-trash') dialog('Återställ projekt', '<p>Projektet flyttas tillbaka till din aktiva lista.</p>', 'Återställ', () => DB.restoreProjectRemote(b.dataset.p).then(async () => { toast('Projektet är återställt.'); await refreshState({ silent: true }); render(); return true; }).catch(e => fail(e.message)));
+  if (a === 'purge-trash') dialog('Radera permanent', '<div class="notice"><strong>Detta går inte att ångra.</strong> Projektet och dess historik tas bort helt. Leveranser som redan ligger i den okopplade poolen påverkas inte.</div>', 'Radera permanent', () => DB.purgeProjectRemote(b.dataset.p).then(async () => { toast('Projektet är permanent raderat.'); await renderTrash(); return true; }).catch(e => fail(e.message)));
+  if (a === 'clear-report') { reportSelection.clear(); drawReportBar(); drawProjects(); }
+  if (a === 'build-report') openReportBuilder();
 });
+
+document.addEventListener('click', e => {
+  const bell = e.target.closest('#notif-bell');
+  if (bell) { toggleNotifPanel(); return; }
+  if (!e.target.closest('.notifpanel')) document.querySelectorAll('.notifpanel').forEach(el => el.remove());
+});
+
+// ---------------------------------------------------------------------
+// Notifications (delivery date changes) — flagged in-app, per project owner.
+// ---------------------------------------------------------------------
+function renderNotifBell() {
+  const el = $('#notif-bell');
+  if (!el) return;
+  const unread = notifications.filter(n => !n.read_at).length;
+  el.innerHTML = `<span class="bellicon" aria-label="Aviseringar">🔔</span>${unread ? `<span class="bellcount">${unread}</span>` : ''}`;
+}
+function toggleNotifPanel() {
+  const existing = document.querySelector('.notifpanel');
+  if (existing) { existing.remove(); return; }
+  const unreadIds = notifications.filter(n => !n.read_at).map(n => n.id);
+  const el = document.createElement('div');
+  el.className = 'notifpanel';
+  el.innerHTML = `<div class="notifhead"><span>Aviseringar</span>${unreadIds.length ? '<button type="button" id="notif-markall" class="textbutton">Markera alla lästa</button>' : ''}</div>${notifications.map(n => `<div class="notifitem ${n.read_at ? '' : 'unread'}">${esc(n.message)}<small>${new Date(n.created_at).toLocaleString('sv-SE')}</small></div>`).join('') || '<div class="notifempty">Inga aviseringar ännu.</div>'}`;
+  document.body.appendChild(el);
+  if (unreadIds.length) $('#notif-markall').onclick = async () => {
+    await DB.markAllNotificationsRead(unreadIds);
+    notifications.forEach(n => n.read_at = n.read_at || new Date().toISOString());
+    renderNotifBell();
+    el.remove();
+  };
+}
+async function refreshNotifications() {
+  try { notifications = await DB.fetchNotifications(); renderNotifBell(); } catch (e) { /* non-critical */ }
+}
+
+// ---------------------------------------------------------------------
+// Presentationsrapport (PDF via print) — Gantt built from plain divs so
+// it renders identically in the print/PDF output.
+// ---------------------------------------------------------------------
+function openReportBuilder() {
+  const selected = state.projects.filter(p => reportSelection.has(p.id));
+  if (!selected.length) return;
+  dialog('Skapa rapport', `<p class="muted">${selected.length} projekt valda.</p><label>Rapportnivå<select name="level"><option value="overview">Översikt — leveransdatum utan detaljer</option><option value="detailed">Detaljerad — Gantt med moment + tabell</option></select></label>`, 'Generera rapport', f => {
+    buildReport(selected, f.get('level'));
+    return false; // keep the picking dialog reachable; report opens in its own dialog
+  });
+}
+function buildReport(projects, level) {
+  const allDeliveries = projects.flatMap(p => p.deliveries.map(l => ({ p, l })));
+  const dates = allDeliveries.flatMap(({ l }) => [l.created, l.deliveryDate]).filter(Boolean).sort();
+  const minD = dates[0] || state.today, maxD = dates.at(-1) || state.today;
+  const span = Math.max(1, (new Date(maxD) - new Date(minD)) / 86400000);
+  const pct = d => d ? Math.min(100, Math.max(0, ((new Date(d) - new Date(minD)) / 86400000 / span) * 100)) : 0;
+  const counts = { red: 0, yellow: 0, green: 0, other: 0 };
+  allDeliveries.forEach(({ l }) => { const s = deliveryStatus(l); counts[['red', 'yellow', 'green'].includes(s) ? s : 'other']++; });
+
+  const modal = $('#report-modal');
+  modal.innerHTML = `<div class="reportwrap"><div class="reporttoolbar"><button type="button" data-close="report-modal">← Tillbaka</button><span style="display:flex;gap:8px"><button type="button" id="report-print" class="primary">Skriv ut / Spara som PDF</button></span></div>
+    <div class="reportsheet">
+      <div class="rhead"><div><span class="brandmark">◒</span> <strong style="font-size:15px">DPA · Projektplan</strong></div><div style="text-align:right"><small>${new Date().toLocaleDateString('sv-SE')}</small></div></div>
+      <h1>Leveransrapport — ${projects.length} projekt</h1>
+      <p class="muted">${esc(projects.map(p => p.name).join(', '))}</p>
+      <div class="reportsummary">
+        <div><strong>${allDeliveries.length}</strong><small>Leveranser totalt</small></div>
+        <div><strong style="color:var(--red)">${counts.red}</strong><small>Kräver åtgärd</small></div>
+        <div><strong style="color:#e0a300">${counts.yellow}</strong><small>Bevaka</small></div>
+        <div><strong style="color:var(--green)">${counts.green}</strong><small>Uppfyllt</small></div>
+      </div>
+      <div class="gantt">
+        <div class="gscale"><span>${minD}</span><span>${maxD}</span></div>
+        ${projects.map(p => `<div class="gprojtitle">${esc(p.name)}</div>${p.deliveries.map(l => {
+          const startPct = pct(l.created), endPct = Math.max(pct(l.deliveryDate), startPct + 1), status = deliveryStatus(l);
+          const markers = level === 'detailed' ? cols.filter(([k]) => k !== 'wbs').map(([k]) => l.points[k]).filter(pt => pt.date).map(pt => `<span class="gmarker" style="left:${pct(pt.date)}%" title="${esc(pt.ref)} ${pt.date}"></span>`).join('') : '';
+          return `<div class="grow"><span class="glabel">${esc(l.name)}</span><div class="gtrack"><span class="gbar status-${status}" style="left:${startPct}%;width:${endPct - startPct}%"></span>${markers}</div></div>`;
+        }).join('')}`).join('')}
+      </div>
+      ${level === 'detailed' ? `<table class="reporttable"><thead><tr><th>Projekt</th><th>Leverans</th><th>Kund</th><th>Leveransdatum</th><th>Status</th>${state.projects.some(p => p.deliveries.some(l => l.points.wbs.ref)) ? '<th>WBS</th>' : ''}</tr></thead><tbody>${allDeliveries.map(({ p, l }) => `<tr><td>${esc(p.name)}</td><td>${esc(l.name)}</td><td>${esc(l.customer)}</td><td>${l.deliveryDate || '–'}</td><td>${statuses[deliveryStatus(l)]}</td><td>${esc(l.points.wbs.ref || '–')}</td></tr>`).join('')}</tbody></table>` : ''}
+      <p class="muted" style="margin-top:20px">Genererad av DPA · Projektplan. Underlaget är testdata.</p>
+    </div>
+  </div>`;
+  modal.showModal();
+  $('#report-print').onclick = () => window.print();
+}
 
 // ---------------------------------------------------------------------
 // Boot — wait for auth.js to finish signing the user in, then load,
 // render, and subscribe to realtime changes from other testers.
 // ---------------------------------------------------------------------
-let unsubscribeRealtime = null;
+let unsubscribeRealtime = null, unsubscribeNotify = null;
 async function boot() {
   await refreshState();
   owner = currentUserName();
+  try {
+    viewPrefs = await DB.fetchViewPreferences();
+    if (viewPrefs.filters?.status) filter = viewPrefs.filters.status;
+  } catch (e) { /* defaults are fine */ }
+  await refreshNotifications();
   render();
   if (!unsubscribeRealtime) unsubscribeRealtime = DB.subscribeRealtime(async () => { await refreshState({ silent: true }); render(); });
+  if (!unsubscribeNotify) unsubscribeNotify = DB.subscribeNotifications(() => refreshNotifications());
 }
 document.addEventListener('dpa:authenticated', boot);
 document.addEventListener('dpa:refresh', async () => { await refreshState({ silent: true }); render(); });

@@ -1,17 +1,13 @@
 // ---------------------------------------------------------------------
 // DPA – data layer. Fetches from Supabase and reshapes into exactly the
-// `state.projects` structure app.js already renders (same field names:
-// id, number, name, owner, customers, desired, originalDesired, actual,
-// reason, reminder, note, noteAt, history, deliveries[{id, name, order,
-// customer, org, created, deliveryDate, reportDate, closed, followOverride,
-// followHistory, points, stages, sourceAt}]). This means the rendering
-// functions in app.js do not need to change — only how state is loaded
-// and how mutations are written back.
+// `state.projects` structure app.js renders (id, number, name, owner,
+// customers, desired, originalDesired, actual, reason, reminder, note,
+// noteAt, history, tagId, tagName, deliveries[{...points incl. wbs}]).
 // ---------------------------------------------------------------------
 import { supabase, getProfile } from './auth.js';
 
-const CHECKPOINT_KEYS = ['startup', 'fn1', 'fn2', 'fiber', 'cs', 'object'];
-const SOURCE_LABEL = { startup: 'DELTA / källsystem', fn1: 'DELTA / källsystem', fn2: 'DELTA / källsystem', fiber: 'Trade / Colt', cs: 'TeliaNow', object: 'DELTA / källsystem' };
+const CHECKPOINT_KEYS = ['startup', 'fn1', 'fn2', 'fiber', 'cs', 'object', 'wbs'];
+const SOURCE_LABEL = { startup: 'DELTA / källsystem', fn1: 'DELTA / källsystem', fn2: 'DELTA / källsystem', fiber: 'Trade / Colt', cs: 'TeliaNow', object: 'DELTA / källsystem', wbs: 'Manuellt (källsystem senare)' };
 
 function emptyPoints() {
   const o = {};
@@ -27,11 +23,12 @@ function nameFor(profilesById, id) {
 }
 
 // -----------------------------------------------------------------
-// Full-state load. One round trip per table, joined client-side —
-// simplest to reason about correctly for a dataset this size.
+// Full-state load — active + archived projects (app.js splits them by
+// whether `actual` is set); deleted (trashed) projects are excluded
+// here and fetched separately by the trash view.
 // -----------------------------------------------------------------
 export async function loadState() {
-  const [{ data: profiles }, { data: projects }, { data: customers }, { data: deliveries }, { data: stages }, { data: checkpoints }, { data: followups }] = await Promise.all([
+  const [{ data: profiles }, { data: projects }, { data: customers }, { data: deliveries }, { data: stages }, { data: checkpoints }, { data: followups }, { data: tags }] = await Promise.all([
     supabase.from('profiles').select('id,username,full_name,role'),
     supabase.from('projects').select('*').is('deleted_at', null).order('created_at'),
     supabase.from('project_customers').select('*'),
@@ -39,9 +36,11 @@ export async function loadState() {
     supabase.from('stages').select('*').order('created_at'),
     supabase.from('checkpoints').select('*'),
     supabase.from('follow_up_events').select('*').order('completed_date'),
+    supabase.from('tags').select('*').order('name'),
   ]);
 
   const profilesById = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+  const tagsById = Object.fromEntries((tags || []).map(t => [t.id, t]));
   const stagesByDelivery = groupBy(stages || [], 'delivery_id');
   const checkpointsByDelivery = groupBy((checkpoints || []).filter(c => c.delivery_id), 'delivery_id');
   const checkpointsByStage = groupBy((checkpoints || []).filter(c => c.stage_id), 'stage_id');
@@ -61,6 +60,8 @@ export async function loadState() {
     name: pr.name,
     ownerId: pr.owner_id,
     owner: nameFor(profilesById, pr.owner_id),
+    tagId: pr.tag_id || '',
+    tagName: pr.tag_id ? (tagsById[pr.tag_id]?.name || '') : '',
     customers: (customersByProject[pr.id] || []).map(c => ({ id: c.id, name: c.name, org: c.org_number })),
     desired: pr.desired_date || '',
     originalDesired: pr.original_desired_date || '',
@@ -70,7 +71,8 @@ export async function loadState() {
     note: pr.note || '',
     noteAt: pr.note_updated_at ? new Date(pr.note_updated_at).toLocaleString('sv-SE') : '',
     updatedAt: pr.updated_at,
-    history: [], // filled lazily via fetchHistory() when the history tab is opened
+    createdAt: pr.created_at,
+    history: [],
     deliveries: (deliveriesByProject[pr.id] || []).map(d => ({
       id: d.id,
       name: d.name,
@@ -96,7 +98,7 @@ export async function loadState() {
     })),
   }));
 
-  return { today: new Date().toISOString().slice(0, 10), projects: mappedProjects };
+  return { today: new Date().toISOString().slice(0, 10), projects: mappedProjects, tags: tags || [] };
 }
 
 function groupBy(rows, key) {
@@ -106,9 +108,7 @@ function groupBy(rows, key) {
 }
 
 // -----------------------------------------------------------------
-// Realtime: any change to the core tables triggers a debounced
-// full refetch + re-render, so every signed-in tester sees changes
-// from colleagues without reloading.
+// Realtime
 // -----------------------------------------------------------------
 export function subscribeRealtime(onChange) {
   let t = null;
@@ -120,25 +120,27 @@ export function subscribeRealtime(onChange) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'checkpoints' }, debounced)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'project_customers' }, debounced)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'follow_up_events' }, debounced)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tags' }, debounced)
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+export function subscribeNotifications(onChange) {
+  const channel = supabase.channel('dpa-notify')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, onChange)
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
 
-// -----------------------------------------------------------------
-// Errors thrown by write helpers carry a `.kind` so app.js can show
-// the right message ('conflict' | 'duplicate' | 'permission' | 'error').
-// -----------------------------------------------------------------
 class DbError extends Error { constructor(msg, kind) { super(msg); this.kind = kind; } }
 
+// ---------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------
 export async function createProject({ name }) {
   const { data, error } = await supabase.from('projects').insert({ name, owner_id: getProfile().id }).select().single();
   if (error) throw new DbError(error.message, 'error');
   return data;
 }
-
-// Concurrency-safe update: the WHERE clause only matches if the row is
-// still at the version we last loaded. If nothing matches, someone else
-// changed it first — refetch and tell the user, never silently overwrite.
 export async function updateProject(id, patch, expectedUpdatedAt) {
   const dbPatch = {};
   if ('name' in patch) dbPatch.name = patch.name;
@@ -148,17 +150,20 @@ export async function updateProject(id, patch, expectedUpdatedAt) {
   if ('reason' in patch) dbPatch.reason_code = patch.reason || null;
   if ('reminder' in patch) dbPatch.reminder_date = patch.reminder || null;
   if ('note' in patch) dbPatch.note = patch.note;
+  if ('tagId' in patch) dbPatch.tag_id = patch.tagId || null;
   const { data, error } = await supabase.from('projects').update(dbPatch).eq('id', id).eq('updated_at', expectedUpdatedAt).select();
   if (error) throw new DbError(error.message, 'error');
   if (!data || data.length === 0) throw new DbError('Projektet har ändrats av någon annan sedan du öppnade det.', 'conflict');
   return data[0];
 }
-
 export async function takeOverProject(id) {
   const { data, error } = await supabase.rpc('take_over_project', { p_project_id: id });
   if (error) throw new DbError(error.message, 'error');
   return data;
 }
+
+// Trash: soft-delete (any writer, own project), list mine (or all if
+// admin), restore, and permanent purge (owner or admin, trash-only).
 export async function deleteProjectRemote(id, note) {
   const { error } = await supabase.rpc('delete_project', { p_project_id: id, p_note: note || '' });
   if (error) throw new DbError(error.message, 'error');
@@ -167,10 +172,17 @@ export async function restoreProjectRemote(id) {
   const { error } = await supabase.rpc('restore_project', { p_project_id: id });
   if (error) throw new DbError(error.message, 'error');
 }
-export async function fetchDeletedProjects() {
-  const { data, error } = await supabase.from('projects').select('id,number,name,deleted_at,deleted_by,profiles:deleted_by(full_name)').not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+export async function purgeProjectRemote(id, note) {
+  const { error } = await supabase.rpc('purge_project', { p_project_id: id, p_note: note || '' });
   if (error) throw new DbError(error.message, 'error');
-  return data || [];
+}
+export async function fetchTrash() {
+  const { data, error } = await supabase.from('projects').select('id,number,name,owner_id,deleted_at,deleted_by').not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+  if (error) throw new DbError(error.message, 'error');
+  const ids = [...new Set((data || []).flatMap(p => [p.owner_id, p.deleted_by].filter(Boolean)))];
+  const { data: people } = ids.length ? await supabase.from('profiles').select('id,full_name').in('id', ids) : { data: [] };
+  const byId = Object.fromEntries((people || []).map(p => [p.id, p.full_name]));
+  return (data || []).map(p => ({ ...p, ownerName: byId[p.owner_id] || 'Okänd', deletedByName: byId[p.deleted_by] || 'Okänd' }));
 }
 
 export async function addCustomer(projectId, { name, org }) {
@@ -178,11 +190,6 @@ export async function addCustomer(projectId, { name, org }) {
   if (error) throw new DbError(error.message, 'error');
 }
 
-// Linking now means: take an existing delivery row from the unlinked
-// pool (fetchUnlinkedDeliveries) and assign it to a project — never an
-// arbitrary typed-in id, since only known orders exist until real
-// integrations are connected. This reuses whatever checkpoints the row
-// already has rather than re-creating it.
 export async function linkDelivery(deliveryId, projectId, newName) {
   const { error } = await supabase.rpc('link_delivery', { p_delivery_id: deliveryId, p_project_id: projectId });
   if (error) {
@@ -195,18 +202,15 @@ export async function unlinkDelivery(deliveryId, note) {
   const { error } = await supabase.rpc('unlink_delivery', { p_delivery_id: deliveryId, p_note: note || '' });
   if (error) throw new DbError(error.message, 'error');
 }
-
 export async function updateDeliveryField(id, patch, expectedUpdatedAt) {
   const dbPatch = {};
   if ('reportDate' in patch) dbPatch.report_date = patch.reportDate || null;
-  if ('deliveryDate' in patch) dbPatch.delivery_date = patch.deliveryDate || null;
-  if ('deliveryDate' in patch) dbPatch.source_synced_at = new Date().toISOString();
+  if ('deliveryDate' in patch) { dbPatch.delivery_date = patch.deliveryDate || null; dbPatch.source_synced_at = new Date().toISOString(); }
   const { data, error } = await supabase.from('deliveries').update(dbPatch).eq('id', id).eq('updated_at', expectedUpdatedAt).select();
   if (error) throw new DbError(error.message, 'error');
   if (!data || data.length === 0) throw new DbError('Leveransen har ändrats av någon annan sedan du öppnade den.', 'conflict');
   return data[0];
 }
-
 export async function closeDelivery(id, note) {
   const { error } = await supabase.rpc('close_delivery', { p_delivery_id: id, p_note: note || '' });
   if (error) throw new DbError(error.message, 'error');
@@ -223,14 +227,10 @@ export async function setFollowOverride(id, date, reason) {
 export async function addStage(deliveryId, name) {
   const { data, error } = await supabase.from('stages').insert({ delivery_id: deliveryId, name }).select().single();
   if (error) throw new DbError(error.message, 'error');
-  const rows = ['fn1', 'fn2', 'cs', 'object'].map(type => ({ stage_id: data.id, checkpoint_type: type, status: 'unknown' }));
+  const rows = ['fn1', 'fn2', 'cs', 'object', 'wbs'].map(type => ({ stage_id: data.id, checkpoint_type: type, status: 'unknown' }));
   await supabase.from('checkpoints').insert(rows);
   return data;
 }
-
-// Checkpoint update: either targets a delivery-level or stage-level row
-// directly (they're pre-created for every delivery/stage), so this is a
-// plain update keyed by (owner_id, checkpoint_type) rather than an upsert.
 export async function updateCheckpoint({ deliveryId, stageId, type, patch }) {
   const dbPatch = {};
   if ('ref' in patch) dbPatch.reference = patch.ref;
@@ -264,4 +264,57 @@ export async function fetchUnlinkedDeliveries() {
     id: d.id, order: `${d.order_type}-${d.order_id}`, name: d.name, customer: d.customer_name, org: d.org_number,
     deliveryDate: d.delivery_date, knownCheckpoints: (d.checkpoints || []).filter(c => c.reference).length,
   }));
+}
+
+// ---------------------------------------------------------------------
+// Tags ("märkningar") — admin manages the catalogue; applying one to a
+// project goes through updateProject() above (dbPatch.tag_id), gated by
+// the normal project-write permission, not admin-only.
+// ---------------------------------------------------------------------
+export async function fetchTags() {
+  const { data, error } = await supabase.from('tags').select('*').order('name');
+  if (error) throw new DbError(error.message, 'error');
+  return data || [];
+}
+export async function createTag(name) {
+  const { error } = await supabase.from('tags').insert({ name, created_by: getProfile().id });
+  if (error) throw new DbError(error.code === '23505' ? 'En märkning med det namnet finns redan.' : error.message, 'error');
+}
+export async function renameTag(id, name) {
+  const { error } = await supabase.from('tags').update({ name }).eq('id', id);
+  if (error) throw new DbError(error.message, 'error');
+}
+export async function deleteTag(id) {
+  const { error } = await supabase.from('tags').delete().eq('id', id);
+  if (error) throw new DbError(error.message, 'error');
+}
+
+// ---------------------------------------------------------------------
+// Notifications — flagged when a delivery's source date changes
+// (server-side trigger writes these; client only reads/marks read).
+// ---------------------------------------------------------------------
+export async function fetchNotifications() {
+  const { data, error } = await supabase.from('notifications').select('*').order('created_at', { ascending: false }).limit(50);
+  if (error) throw new DbError(error.message, 'error');
+  return data || [];
+}
+export async function markNotificationRead(id) {
+  await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id);
+}
+export async function markAllNotificationsRead(ids) {
+  if (!ids.length) return;
+  await supabase.from('notifications').update({ read_at: new Date().toISOString() }).in('id', ids);
+}
+
+// ---------------------------------------------------------------------
+// Personal view — one saved layout per user.
+// ---------------------------------------------------------------------
+export async function fetchViewPreferences() {
+  const { data } = await supabase.from('view_preferences').select('*').eq('user_id', getProfile().id).maybeSingle();
+  return data || { columns: {}, column_order: [], filters: {}, sort: {} };
+}
+export async function saveViewPreferences(patch) {
+  const row = { user_id: getProfile().id, ...patch };
+  const { error } = await supabase.from('view_preferences').upsert(row, { onConflict: 'user_id' });
+  if (error) throw new DbError(error.message, 'error');
 }

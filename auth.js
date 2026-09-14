@@ -117,6 +117,7 @@ async function openAdminPanel() {
   const modal = document.getElementById('modal');
   const { data: users } = await supabase.from('profiles').select('id,username,full_name,role,must_change_password,created_at').order('created_at');
   const { data: deleted } = await supabase.from('projects').select('id,number,name,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+  const { data: tagList } = await supabase.from('tags').select('*').order('name');
   modal.innerHTML = `
     <form method="dialog"><h2 id="modal-title">Administrera användare</h2>
     <p class="muted">Konton skapas direkt här — ingen e-postinbjudan. Lösenordet visas en gång; ge det till personen själv.</p>
@@ -140,8 +141,17 @@ async function openAdminPanel() {
       <button type="button" class="primary" id="cu-submit">Skapa användare</button>
     </span></div>
     <hr>
+    <h3>Märkningar (samlingsprojekt)</h3>
+    <p class="muted">Projektledare kopplar själva sitt projekt till en märkning — här skapar/tar du bara bort märkningarna som finns att välja på.</p>
+    <div id="tags-error" class="autherror" style="display:none"></div>
+    <div id="tags-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">${(tagList || []).map(t => `
+      <div style="display:flex;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+        <span>${t.name}</span><button type="button" class="textbutton" data-deltag="${t.id}" data-tname="${t.name}">Ta bort</button>
+      </div>`).join('') || '<p class="muted">Inga märkningar ännu.</p>'}</div>
+    <span style="display:flex;gap:6px"><input id="new-tag" placeholder="Namn på ny märkning, t.ex. Connect Estate"><button type="button" id="add-tag">Lägg till</button></span>
+    <hr>
     <h3>Borttagna projekt (${deleted?.length || 0})</h3>
-    <p class="muted">Mjuk radering — leveranser förloras aldrig, de hamnar i den okopplade poolen.</p>
+    <p class="muted">Mjuk radering — leveranser förloras aldrig, de hamnar i den okopplade poolen. Projektledare hanterar numera sin egen papperskorg; detta är en överblick.</p>
     <div style="overflow-x:auto"><table class="admintable"><thead><tr><th>Projektnummer</th><th>Namn</th><th>Borttaget</th><th></th></tr></thead>
     <tbody>${(deleted || []).map(p => `
       <tr><td>${p.number}</td><td>${p.name}</td><td>${new Date(p.deleted_at).toLocaleString('sv-SE')}</td>
@@ -151,6 +161,20 @@ async function openAdminPanel() {
   modal.showModal();
   document.getElementById('cu-cancel').onclick = () => modal.close();
   document.getElementById('cu-regen').onclick = () => { document.getElementById('cu-password').value = randomPassword(); };
+  document.getElementById('add-tag').onclick = async () => {
+    const val = document.getElementById('new-tag').value.trim();
+    const err = document.getElementById('tags-error');
+    err.style.display = 'none';
+    if (!val) { err.textContent = 'Ange ett namn.'; err.style.display = 'block'; return; }
+    const { error } = await supabase.from('tags').insert({ name: val, created_by: currentProfile.id });
+    if (error) { err.textContent = error.code === '23505' ? 'Den märkningen finns redan.' : error.message; err.style.display = 'block'; return; }
+    modal.close(); openAdminPanel();
+  };
+  document.querySelectorAll('[data-deltag]').forEach(btn => btn.onclick = async () => {
+    if (!confirm(`Ta bort märkningen "${btn.dataset.tname}"? Projekt som har den mister sin koppling (raderas inte).`)) return;
+    await supabase.from('tags').delete().eq('id', btn.dataset.deltag);
+    modal.close(); openAdminPanel(); document.dispatchEvent(new CustomEvent('dpa:refresh'));
+  });
   document.querySelectorAll('[data-reset]').forEach(btn => btn.onclick = async () => {
     const pw = randomPassword();
     if (!confirm(`Sätt nytt tillfälligt lösenord för "${btn.dataset.uname}"?\n\nNytt lösenord: ${pw}\n\nDetta visas bara nu — kopiera det innan du fortsätter.`)) return;
