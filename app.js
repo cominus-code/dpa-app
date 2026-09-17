@@ -354,7 +354,15 @@ function report(p) {
   document.querySelectorAll('[data-report]').forEach(x => x.onchange = update);
   $('#recipient').oninput = update; $('#customer-text').oninput = update;
   $('#copy-report').onclick = () => navigator.clipboard.writeText($('#report-preview').innerText).then(() => toast('Kundunderlaget kopierat.')).catch(() => toast('Markera och kopiera texten i förhandsgranskningen.'));
-  $('#print-report').onclick = () => window.print();
+  $('#print-report').onclick = () => {
+    // Route through #report-modal (a plain overlay, not a <dialog>) — printing
+    // content inside an open native <dialog> is unreliable in Chromium and
+    // produces a blank page, as found while testing the tidsplansbilaga.
+    const rm = $('#report-modal');
+    rm.innerHTML = `<div class="reportwrap"><div class="reporttoolbar"><button type="button" data-close="report-modal">← Tillbaka</button><button type="button" id="report-print2" class="primary">Skriv ut / Spara som PDF</button></div><div class="tlsection">${$('#report-preview').innerHTML}</div></div>`;
+    rm.hidden = false;
+    $('#report-print2').onclick = () => window.print();
+  };
   update();
 }
 
@@ -363,7 +371,7 @@ function report(p) {
 // ---------------------------------------------------------------------
 document.addEventListener('click', async e => {
   const close = e.target.closest('[data-close]');
-  if (close) { $('#' + close.dataset.close).close(); return; }
+  if (close) { const el = $('#' + close.dataset.close); if (el.close) el.close(); else el.hidden = true; return; }
   const nav = e.target.closest('[data-view]');
   if (nav) { view = nav.dataset.view; render(); return; }
   const filt = e.target.closest('[data-filter]');
@@ -614,7 +622,7 @@ function renderTimelineReport(p, opts) {
   if (opts.variant === 'both') body += '<div class="tlpagebreak"></div>';
   if (opts.variant === 'detailed' || opts.variant === 'both') body += renderDetailedSection(p, opts, range);
   modal.innerHTML = `<div class="reportwrap"><div class="reporttoolbar"><button type="button" data-close="report-modal">← Tillbaka</button><button type="button" id="report-print" class="primary">Skriv ut / Spara som PDF</button></div>${body}</div>`;
-  modal.showModal();
+  modal.hidden = false;
   $('#report-print').onclick = () => window.print();
 }
 
