@@ -90,8 +90,9 @@ export async function loadState() {
       followHistory: (followupsByDelivery[d.id] || []).map(f => ({ date: f.completed_date, note: f.note, by: nameFor(profilesById, f.completed_by) })),
       points: pointsFor(checkpointsByDelivery[d.id] || []),
       stages: (stagesByDelivery[d.id] || []).map(s => ({
-        id: s.id, name: s.name,
+        id: s.id, name: s.name, deliveryDate: s.delivery_date || '',
         points: pointsFor(checkpointsByStage[s.id] || []),
+        updatedAt: s.updated_at,
       })),
       sourceAt: d.source_synced_at ? new Date(d.source_synced_at).toLocaleString('sv-SE') : 'Aldrig hämtad',
       updatedAt: d.updated_at,
@@ -224,12 +225,21 @@ export async function setFollowOverride(id, date, reason) {
   if (error) throw new DbError(error.message, 'error');
 }
 
-export async function addStage(deliveryId, name) {
-  const { data, error } = await supabase.from('stages').insert({ delivery_id: deliveryId, name }).select().single();
+export async function addStage(deliveryId, name, deliveryDate) {
+  const { data, error } = await supabase.from('stages').insert({ delivery_id: deliveryId, name, delivery_date: deliveryDate || null }).select().single();
   if (error) throw new DbError(error.message, 'error');
   const rows = ['fn1', 'fn2', 'cs', 'object', 'wbs'].map(type => ({ stage_id: data.id, checkpoint_type: type, status: 'unknown' }));
   await supabase.from('checkpoints').insert(rows);
   return data;
+}
+export async function updateStage(id, patch, expectedUpdatedAt) {
+  const dbPatch = {};
+  if ('name' in patch) dbPatch.name = patch.name;
+  if ('deliveryDate' in patch) dbPatch.delivery_date = patch.deliveryDate || null;
+  const { data, error } = await supabase.from('stages').update(dbPatch).eq('id', id).eq('updated_at', expectedUpdatedAt).select();
+  if (error) throw new DbError(error.message, 'error');
+  if (!data || data.length === 0) throw new DbError('Etappen har ändrats av någon annan sedan du öppnade den.', 'conflict');
+  return data[0];
 }
 export async function updateCheckpoint({ deliveryId, stageId, type, patch }) {
   const dbPatch = {};

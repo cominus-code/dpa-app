@@ -82,3 +82,114 @@ dialog.reportmodal::backdrop{background:rgba(20,18,50,.5)}
 
 /* ---- Report selection bar ---- */
 .reportbar{display:flex;align-items:center;gap:12px;background:#eee9ff;border:1px solid #d5c9ff;border-radius:8px;padding:10px 16px;margin-top:14px;font-size:13px;font-weight:600;color:#4d2fc2}
+
+/* ================== DELTA-aligned redesign ================== */
+
+/* App header: DELTA static nav (decorative) + DPA as the active tab */
+header.appheader{background:#211d40;height:52px;padding:0 20px;display:flex;align-items:center;justify-content:space-between;gap:24px}
+header.appheader .brandline{display:flex;align-items:center;gap:28px;min-width:0}
+header.appheader .brand{display:flex;align-items:center;gap:8px;color:#fff;font-weight:500;font-size:16px;flex:none}
+header.appheader .brand small{display:none}
+header.appheader nav.deltanav{display:flex;gap:20px;font-size:13px;color:#b8b3d9;white-space:nowrap;overflow:hidden}
+header.appheader nav.deltanav span.active{color:#fff;font-weight:500;border-bottom:2px solid #a78bfa;padding-bottom:16px;margin-bottom:-16px}
+header.appheader .identity{display:flex;align-items:center;gap:8px;color:#fff;font-size:12.5px;flex:none;background:none;border:0;padding:0}
+header.appheader .identity b{width:24px;height:24px;border-radius:50%;background:#a78bfa;color:#211d40;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500}
+header.appheader .identity small{display:block;color:#b8b3d9;font-size:10.5px}
+
+/* Page head with primary action */
+.pagehead2{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px}
+.pagehead2 h1{font-size:20px;margin:0 0 2px}
+.pagehead2 p{font-size:13px;color:var(--muted);margin:0}
+
+/* Tabs (Mina projekt / Alla projekt) */
+.tabbar{display:flex;gap:20px;border-bottom:0.5px solid var(--border);margin-bottom:14px}
+.tabbar button{background:none;border:0;font-size:13px;color:var(--muted);padding:0 0 9px;border-bottom:2px solid transparent}
+.tabbar button.active{color:var(--text);font-weight:500;border-bottom-color:var(--purple)}
+
+/* Pill filter bar */
+.pillbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.pillbar input[type="text"], .pillbar input:not([type]){flex:1;min-width:160px}
+.pill{font-size:12px;padding:6px 12px;border-radius:20px;background:var(--bg);color:var(--muted);border:0;flex:none}
+.pill.active{background:var(--purple);color:#fff}
+.colbtn{flex:none;font-size:12px;padding:6px 12px;display:flex;align-items:center;gap:6px;font-weight:500;background:#fff;border:1px solid var(--border);border-radius:6px}
+
+/* Clean table */
+table.cleantable{width:100%;border-collapse:collapse;font-size:13px}
+table.cleantable thead th{background:var(--bg);text-align:left;padding:9px 12px;font-weight:500;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.02em}
+table.cleantable tbody td{padding:10px 12px;border-top:0.5px solid var(--border)}
+table.cleantable tbody tr.subrow td{background:var(--bg)}
+.projcell-name{font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px}
+.projcell-name .chev{font-size:13px;color:var(--muted);flex:none;transition:transform .1s}
+.projcell-sub{font-size:11px;color:var(--muted);margin-left:19px}
+.statusdot-inline{display:inline-flex;align-items:center;gap:6px;font-size:12.5px}
+.statusdot-inline .sw{width:7px;height:7px;border-radius:50%;flex:none}
+.sw-red{background:var(--red)} .sw-yellow{background:#ef9f27} .sw-green{background:var(--green)} .sw-gray{background:var(--muted)}
+.sw-ring{width:6px;height:6px;border-radius:50%;border:1px solid var(--muted);display:inline-block;flex:none;margin-right:5px}
+.legend2 .sw{margin-right:5px;border-radius:50%;display:inline-block}
+
+/* Expanded project detail: compact note + delivery sub-tabs */
+.notebar2{display:flex;align-items:center;gap:10px;background:#fff;border:0.5px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:14px}
+.notebar2 .lbl{font-size:11px;font-weight:500;color:var(--muted);text-transform:uppercase;flex:none}
+.notebar2 .txt{font-size:12.5px;flex:1}
+.notebar2 button{flex:none;background:none;border:0;color:var(--muted);padding:2px}
+
+.deliveryhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px}
+.deliveryhead .tabs2{display:flex;align-items:baseline;gap:16px}
+.deliveryhead .tabs2 span{font-size:12px;color:var(--muted);cursor:pointer;padding-bottom:3px}
+.deliveryhead .tabs2 span.active{color:var(--purple);font-weight:500;border-bottom:2px solid var(--purple)}
+.deliveryhead .actions2{display:flex;gap:8px}
+.deliveryhead .actions2 button{font-size:11px;padding:5px 10px;display:flex;align-items:center;gap:5px;font-weight:500;background:#fff;border:1px solid var(--border);border-radius:6px}
+
+table.subtable{width:100%;border-collapse:collapse;font-size:12px;background:#fff;border:0.5px solid var(--border);border-radius:6px;overflow:hidden}
+table.subtable thead th{text-align:left;padding:7px 10px;font-weight:500;font-size:10px;color:var(--muted);text-transform:uppercase}
+table.subtable tbody td{padding:8px 10px;border-top:0.5px solid var(--border)}
+table.subtable tbody tr.stagesub td{font-size:11.5px;color:var(--muted)}
+table.subtable tbody tr.stagesub td:first-child{padding-left:26px}
+.treeicon{font-size:12px;margin-right:5px;color:var(--muted)}
+
+.legend2{display:flex;gap:16px;font-size:11px;color:var(--muted);margin-top:14px;flex-wrap:wrap}
+.legend2 .sw{margin-right:5px}
+
+/* ================== Tidsplansbilaga (customer timeline report) ================== */
+.reportwrap{padding:0}
+.reporttoolbar{display:flex;justify-content:space-between;padding:14px 20px;position:sticky;top:0;background:#fff;border-bottom:1px solid var(--border);z-index:2}
+.tlsection{padding:28px 36px;background:#fff;color:#1c1a2e}
+.tlpagebreak{break-after:page;page-break-after:always;height:0}
+.tlhead{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #211d40;padding-bottom:14px;margin-bottom:18px}
+.tlhead h1{font-size:20px;margin:0}
+.tlsub{font-size:13px;color:#7f77dd;font-weight:500}
+.tlmeta{text-align:right;font-size:11.5px;color:#5f5e5a}
+.tlsummary{display:flex;gap:18px;flex-wrap:wrap;background:#f6f5fb;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:12.5px}
+.tlsummary>div{display:flex;align-items:center;gap:7px}
+.tlsummary .ico{font-style:normal;color:#7f77dd}
+.tlgantt{margin-bottom:18px;position:relative}
+.gscale2{position:relative;height:18px;font-size:10px;color:#8a8980;border-bottom:1px solid var(--border);margin-bottom:6px;margin-left:170px}
+.gscale2 span{position:absolute;transform:translateX(-50%)}
+.gtoday{position:absolute;top:0;bottom:0;width:0;border-left:1.5px dashed #a78bfa;z-index:1}
+.gtoday span{position:absolute;top:-14px;font-size:9px;color:#7f77dd;font-weight:500;transform:translateX(-50%);white-space:nowrap}
+.grow2{position:relative;display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11.5px}
+.glabel2{width:160px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gtrack2{position:relative;flex:1;height:14px;background:#f1f0f4;border-radius:3px}
+.gbar{position:absolute;top:2px;height:10px;border-radius:3px;background:#c9c4ee}
+.gmilestone{position:absolute;top:-3px;width:10px;height:10px;border-radius:2px;background:#7f77dd;transform:translateX(-50%) rotate(45deg)}
+.gnodate,.gdatetext{font-size:10.5px;color:#8a8980;flex:none;width:90px}
+.gflag{font-size:10.5px;color:#854F0B;margin:-2px 0 6px 168px}
+.tlchanges{background:#faf9fd;border-left:3px solid #7f77dd;border-radius:0 6px 6px 0;padding:10px 14px;font-size:12px;margin:16px 0}
+.tlchanges p{margin:4px 0}
+.tllegend{display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:#5f5e5a;margin-top:14px}
+.tlfooter{font-size:10px;color:#8a8980;margin-top:16px;padding-top:12px;border-top:0.5px solid var(--border)}
+.tldelivery{border-top:1px solid var(--border);padding:10px 0}
+.tldeliveryhead{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.tlstage{margin-left:18px;border-left:2px solid #eee;padding-left:10px;margin-top:4px}
+.tlstagename{font-size:11.5px;font-weight:500;color:#5f5e5a;margin-bottom:2px}
+.momentrow{display:flex;justify-content:space-between;font-size:11.5px;padding:3px 0 3px 170px}
+.momentlabel{color:#3c3a4a}
+.momentstate.done{color:#3B6D11}
+.momentstate.open{color:#854F0B}
+.momentstate.muted{color:#8a8980}
+@media print{
+  body>*:not(#report-modal){display:none!important}
+  #report-modal{position:static;width:100%;max-height:none;border:0;box-shadow:none;padding:0;margin:0}
+  #report-modal::backdrop{display:none}
+  .reporttoolbar{display:none}
+}
